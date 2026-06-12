@@ -1,11 +1,14 @@
-"""Ingest API — parse documents, chunk, embed via Chroma's built-in embedder, upsert."""
+"""Ingest API — parse documents, chunk, embed via Chroma's built-in embedder, upsert.
+Also proxies web search to the local SearXNG container."""
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import chromadb
 from chromadb.config import Settings
 
@@ -15,6 +18,7 @@ from chunker import chunk_text
 CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents")
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://searxng:8080").rstrip("/")
 
 app = FastAPI(title="Assistant Ingest API", version="0.1.0")
 
