@@ -57,22 +57,35 @@ function DocumentsPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl space-y-8 px-6 py-8">
+      <main className="mx-auto max-w-5xl px-6 py-8">
         {online === false && <SidecarOfflineBanner />}
 
-        <section className="space-y-2">
-          <h2 className="text-2xl font-bold tracking-tight text-foreground">
-            Documents
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Upload files to embed them into your local ChromaDB. The assistant will use
-            this library to answer questions in v2.
-          </p>
-        </section>
+        <Tabs defaultValue="documents" className="space-y-6">
+          <TabsList>
+            <TabsTrigger value="documents">Documents</TabsTrigger>
+            <TabsTrigger value="web">Web search</TabsTrigger>
+          </TabsList>
 
-        <DocumentUploader onUploaded={() => setRefreshKey((k) => k + 1)} />
-        <DocumentList refreshKey={refreshKey} />
+          <TabsContent value="documents" className="space-y-6">
+            <section className="space-y-2">
+              <h2 className="text-2xl font-bold tracking-tight text-foreground">
+                Documents
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                Upload files to embed them into your local ChromaDB. The assistant will
+                use this library to answer questions in v2.
+              </p>
+            </section>
+            <DocumentUploader onUploaded={() => setRefreshKey((k) => k + 1)} />
+            <DocumentList refreshKey={refreshKey} />
+          </TabsContent>
+
+          <TabsContent value="web">
+            <WebSearchPanel />
+          </TabsContent>
+        </Tabs>
       </main>
+
     </div>
   );
 }
