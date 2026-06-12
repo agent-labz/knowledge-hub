@@ -11,6 +11,20 @@ services:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: assistant-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-change-me-please-use-a-long-random-string}
+      - UWSGI_WORKERS=2
+      - UWSGI_THREADS=4
+
   ingest-api:
     build: ./ingest-api
     container_name: assistant-ingest-api
@@ -21,8 +35,10 @@ services:
       - CHROMA_HOST=chromadb
       - CHROMA_PORT=8000
       - COLLECTION_NAME=documents
+      - SEARXNG_URL=http://searxng:8080
     depends_on:
       - chromadb
+      - searxng
 
 volumes:
   chroma-data:

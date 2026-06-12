@@ -1,0 +1,43 @@
+# SearXNG settings — minimal config tuned for local API use.
+# Full reference: https://docs.searxng.org/admin/settings/settings.html
+use_default_settings: true
+
+general:
+  instance_name: "Personal Assistant Search"
+  debug: false
+
+server:
+  # secret_key is read from $SEARXNG_SECRET (set in docker-compose)
+  limiter: false              # off for local single-user use
+  image_proxy: true
+  http_protocol_version: "1.1"
+  method: "GET"
+  default_http_headers:
+    X-Content-Type-Options: nosniff
+    X-Download-Options: noopen
+    X-Robots-Tag: noindex, nofollow
+    Referrer-Policy: no-referrer
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json                    # REQUIRED so the ingest-api can query as JSON
+
+ui:
+  static_use_hash: true
+
+# Use a sensible default engine mix; rely on built-ins.
+engines:
+  - name: wikipedia
+    disabled: false
+  - name: duckduckgo
+    disabled: false
+  - name: google
+    disabled: false
+  - name: bing
+    disabled: false
+  - name: github
+    disabled: false
