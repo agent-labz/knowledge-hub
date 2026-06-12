@@ -15,6 +15,23 @@ export interface IngestedDocument {
 
 export interface UploadResult extends IngestedDocument {}
 
+export interface WebSearchResult {
+  title?: string;
+  url?: string;
+  content?: string;
+  engine?: string;
+  score?: number;
+  published_date?: string;
+}
+
+export interface WebSearchResponse {
+  query: string;
+  count: number;
+  results: WebSearchResult[];
+  answers: string[];
+  suggestions: string[];
+}
+
 async function jsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`;
@@ -32,6 +49,15 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 export async function ping(): Promise<boolean> {
   try {
     const res = await fetch(`${INGEST_URL}/health`, { method: "GET" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function pingWebSearch(): Promise<boolean> {
+  try {
+    const res = await fetch(`${INGEST_URL}/search/web/health`);
     return res.ok;
   } catch {
     return false;
@@ -57,6 +83,23 @@ export async function listDocuments(): Promise<IngestedDocument[]> {
 export async function deleteDocument(id: string): Promise<void> {
   const res = await fetch(`${INGEST_URL}/documents/${id}`, { method: "DELETE" });
   await jsonOrThrow(res);
+}
+
+export async function webSearch(
+  query: string,
+  opts: { maxResults?: number; categories?: string; timeRange?: string } = {},
+): Promise<WebSearchResponse> {
+  const res = await fetch(`${INGEST_URL}/search/web`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      query,
+      max_results: opts.maxResults ?? 10,
+      categories: opts.categories,
+      time_range: opts.timeRange,
+    }),
+  });
+  return jsonOrThrow<WebSearchResponse>(res);
 }
 
 export const ingestUrl = INGEST_URL;
