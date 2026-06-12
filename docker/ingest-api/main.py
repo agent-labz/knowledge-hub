@@ -1,11 +1,14 @@
-"""Ingest API — parse documents, chunk, embed via Chroma's built-in embedder, upsert."""
+"""Ingest API — parse documents, chunk, embed via Chroma's built-in embedder, upsert.
+Also proxies web search to the local SearXNG container."""
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import chromadb
 from chromadb.config import Settings
 
@@ -15,6 +18,7 @@ from chunker import chunk_text
 CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents")
+SEARXNG_URL = os.getenv("SEARXNG_URL", "http://searxng:8080").rstrip("/")
 
 app = FastAPI(title="Assistant Ingest API", version="0.1.0")
 
@@ -142,5 +146,82 @@ def delete_document(doc_id: str):
 
 @app.post("/search")
 def search_stub():
-    """Placeholder — wired up in v2 for the agent's tool call."""
-    raise HTTPException(status_code=501, detail="Search not implemented yet (v2)")
+    """Placeholder for document RAG search — wired up in v2 for the agent's tool call."""
+    raise HTTPException(status_code=501, detail="Document search not implemented yet (v2)")
+
+
+class WebSearchRequest(BaseModel):
+    query: str
+    max_results: int = 10
+    categories: Optional[str] = None  # e.g. "general", "news", "it"
+    language: str = "en"
+    time_range: Optional[str] = None  # day, week, month, year
+
+
+@app.get("/search/web/health")
+def web_search_health():
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            r = client.get(f"{SEARXNG_URL}/healthz")
+        return {"status": "ok" if r.status_code == 200 else "degraded", "code": r.status_code}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SearXNG unreachable: {e}")
+
+
+@app.post("/search/web")
+def web_search(req: WebSearchRequest):
+    """Proxy a web search to the local SearXNG instance, returning JSON results."""
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    params = {
+        "q": req.query,
+        "format": "json",
+        "language": req.language,
+        "safesearch": "0",
+    }
+    if req.categories:
+        params["categories"] = req.categories
+    if req.time_range:
+        params["time_range"] = req.time_range
+
+    try:
+        with httpx.Client(timeout=20.0) as client:
+            r = client.get(f"{SEARXNG_URL}/search", params=params)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SearXNG request failed: {e}")
+
+    if r.status_code != 200:
+        raise HTTPException(
+            status_code=502,
+            detail=f"SearXNG returned {r.status_code}: {r.text[:200]}",
+        )
+
+    try:
+        payload = r.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail="SearXNG did not return JSON — make sure 'json' is in settings.yml formats.",
+        )
+
+    raw = payload.get("results") or []
+    results = [
+        {
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "content": item.get("content"),
+            "engine": item.get("engine"),
+            "score": item.get("score"),
+            "published_date": item.get("publishedDate"),
+        }
+        for item in raw[: req.max_results]
+    ]
+    return {
+        "query": req.query,
+        "count": len(results),
+        "results": results,
+        "answers": payload.get("answers") or [],
+        "suggestions": payload.get("suggestions") or [],
+    }
+
