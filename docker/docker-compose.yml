@@ -25,6 +25,23 @@ services:
       - UWSGI_WORKERS=2
       - UWSGI_THREADS=4
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: assistant-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    # Uncomment to enable NVIDIA GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
   ingest-api:
     build: ./ingest-api
     container_name: assistant-ingest-api
@@ -36,9 +53,13 @@ services:
       - CHROMA_PORT=8000
       - COLLECTION_NAME=documents
       - SEARXNG_URL=http://searxng:8080
+      - OLLAMA_URL=http://ollama:11434
+      - DEFAULT_MODEL=${DEFAULT_MODEL:-llama3.2:3b}
     depends_on:
       - chromadb
       - searxng
+      - ollama
 
 volumes:
   chroma-data:
+  ollama-data:
