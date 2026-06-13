@@ -73,9 +73,11 @@ docker compose down -v           # also wipe chroma-data volume
 | `POST` | `/documents` | upload + ingest a file |
 | `GET`  | `/documents` | list ingested documents |
 | `DELETE` | `/documents/{id}` | delete all chunks for a doc |
-| `POST` | `/search` | stub — RAG over Chroma (v2) |
+| `POST` | `/search` | RAG search over Chroma |
 | `GET`  | `/search/web/health` | SearXNG liveness |
 | `POST` | `/search/web` | web search via SearXNG (JSON) |
+| `GET`  | `/chat/models` | list locally-pulled Ollama models |
+| `POST` | `/chat` | SSE stream — runs the tool-calling loop (`search_documents`, `web_search`) and streams the final answer |
 
 `POST /search/web` body:
 ```json
@@ -89,14 +91,16 @@ docker compose down -v           # also wipe chroma-data volume
 | `VITE_INGEST_URL` | webapp | `http://localhost:8080` | Ingest API URL |
 | `SEARXNG_SECRET` | compose | placeholder | Secret key for SearXNG sessions — set your own |
 | `SEARXNG_URL` | ingest-api | `http://searxng:8080` | Internal sidecar→SearXNG URL |
+| `OLLAMA_URL` | ingest-api | `http://ollama:11434` | Internal sidecar→Ollama URL |
+| `DEFAULT_MODEL` | ingest-api | `llama3.2:3b` | Model used when chat request omits one |
 
-SearXNG config: `docker/searxng/settings.yml` (JSON format is enabled — required for the API). Tweak engines or `safe_search` there.
+SearXNG config: `docker/searxng/settings.yml`.
 
-## v2 (next)
+## v3 (next)
 
-- Add **Ollama** to the same compose stack
-- Chat UI with an agent that has two tools: `search_documents` (Chroma) and `search_web` (SearXNG)
+- Persistent chat history
 - Tauri shell bundling all four services
+- Multi-modal (images, audio)
 
 ## File support notes
 
