@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Copy, Database } from "lucide-react";
+import { AlertCircle, CheckCircle2, Copy, Database, MessageSquare } from "lucide-react";
 import { DocumentUploader } from "@/components/DocumentUploader";
 import { DocumentList } from "@/components/DocumentList";
 import { WebSearchPanel } from "@/components/WebSearchPanel";
