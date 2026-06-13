@@ -2,15 +2,26 @@
 
 A local-first personal assistant that ingests your documents into a vector database and searches the web through your own SearXNG, so an AI agent (v2) can use both as tools.
 
-## v1 services
+## Services
 
 | Service | Purpose | Port |
 |---|---|---|
 | **chromadb** | Vector store for embedded document chunks | `:8000` |
 | **searxng** | Privacy-respecting metasearch (Google, Bing, DDG, Wikipedia, GitHub…) | `:8888` |
-| **ingest-api** | FastAPI sidecar: parses files, chunks, embeds into Chroma, proxies web search | `:8080` |
+| **ollama** | Local LLM runtime — powers the chat agent | `:11434` |
+| **ingest-api** | FastAPI sidecar: parses files, embeds into Chroma, proxies web search, runs the chat tool loop | `:8080` |
 
-The webapp talks to `ingest-api` only — it never reaches Chroma or SearXNG directly.
+The webapp talks to `ingest-api` only — it never reaches Chroma, SearXNG, or Ollama directly.
+
+### Pull a model
+
+After `docker compose up -d`, pull a chat model into Ollama (one-time, ~2 GB):
+
+```bash
+docker exec assistant-ollama ollama pull llama3.2:3b
+```
+
+Override the default with `DEFAULT_MODEL=phi4:mini docker compose up -d` etc.
 
 ## Running it
 
