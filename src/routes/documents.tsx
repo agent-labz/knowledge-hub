@@ -49,11 +49,31 @@ function DocumentsPage() {
     <div className="min-h-screen bg-background">
       <header className="border-b border-border">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-2">
-            <Database className="h-5 w-5 text-primary" />
-            <h1 className="text-base font-semibold text-foreground">
-              Personal Assistant
-            </h1>
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-primary" />
+              <h1 className="text-base font-semibold text-foreground">
+                Personal Assistant
+              </h1>
+            </div>
+            <nav className="flex items-center gap-3 text-sm">
+              <Link
+                to="/documents"
+                className="text-muted-foreground hover:text-foreground"
+                activeProps={{ className: "text-foreground font-medium" }}
+              >
+                <Database className="mr-1 inline h-3.5 w-3.5" />
+                Documents
+              </Link>
+              <Link
+                to="/chat"
+                className="text-muted-foreground hover:text-foreground"
+                activeProps={{ className: "text-foreground font-medium" }}
+              >
+                <MessageSquare className="mr-1 inline h-3.5 w-3.5" />
+                Chat
+              </Link>
+            </nav>
           </div>
           <SidecarBadge online={online} />
         </div>
