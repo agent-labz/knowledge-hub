@@ -1,13 +1,15 @@
-"""Ingest API — parse documents, chunk, embed via Chroma's built-in embedder, upsert.
-Also proxies web search to the local SearXNG container."""
+"""Ingest API — parse documents, chunk, embed, upsert, search.
+Also proxies web search to SearXNG and chat to Ollama with tool calling."""
+import json
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 import chromadb
 from chromadb.config import Settings
@@ -19,8 +21,10 @@ CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 COLLECTION_NAME = os.getenv("COLLECTION_NAME", "documents")
 SEARXNG_URL = os.getenv("SEARXNG_URL", "http://searxng:8080").rstrip("/")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434").rstrip("/")
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "llama3.2:3b")
 
-app = FastAPI(title="Assistant Ingest API", version="0.1.0")
+app = FastAPI(title="Assistant Ingest API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -43,15 +47,18 @@ def _collection():
     return client.get_or_create_collection(name=COLLECTION_NAME)
 
 
+# ─── Health ────────────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
     try:
-        client = _client()
-        client.heartbeat()
+        _client().heartbeat()
         return {"status": "ok", "chroma": "ok", "collection": COLLECTION_NAME}
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Chroma unreachable: {e}")
 
+
+# ─── Documents ─────────────────────────────────────────────────────────────
 
 @app.post("/documents")
 async def upload_document(file: UploadFile = File(...)):
@@ -106,7 +113,6 @@ async def upload_document(file: UploadFile = File(...)):
 def list_documents():
     try:
         coll = _collection()
-        # Pull all metadatas (fine for v1 scale). Chroma returns dicts.
         result = coll.get(include=["metadatas"])
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Chroma error: {e}")
@@ -126,11 +132,7 @@ def list_documents():
                 "chunks": meta.get("total_chunks", 0),
                 "ingested_at": meta.get("ingested_at"),
             }
-    docs: List[dict] = sorted(
-        grouped.values(),
-        key=lambda d: d.get("ingested_at") or "",
-        reverse=True,
-    )
+    docs = sorted(grouped.values(), key=lambda d: d.get("ingested_at") or "", reverse=True)
     return {"documents": docs}
 
 
@@ -144,18 +146,69 @@ def delete_document(doc_id: str):
         raise HTTPException(status_code=500, detail=f"Delete failed: {e}")
 
 
-@app.post("/search")
-def search_stub():
-    """Placeholder for document RAG search — wired up in v2 for the agent's tool call."""
-    raise HTTPException(status_code=501, detail="Document search not implemented yet (v2)")
+# ─── Document RAG search ───────────────────────────────────────────────────
 
+class DocSearchRequest(BaseModel):
+    query: str
+    top_k: int = 5
+
+
+def _do_doc_search(query: str, top_k: int = 5) -> List[dict]:
+    coll = _collection()
+    res = coll.query(query_texts=[query], n_results=max(1, min(top_k, 25)))
+    docs = (res.get("documents") or [[]])[0]
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0]
+    out = []
+    for i, content in enumerate(docs):
+        meta = metas[i] if i < len(metas) else {}
+        out.append({
+            "source": meta.get("source_name"),
+            "doc_id": meta.get("doc_id"),
+            "chunk_index": meta.get("chunk_index"),
+            "content": content,
+            "distance": dists[i] if i < len(dists) else None,
+        })
+    return out
+
+
+@app.post("/search")
+def search_documents(req: DocSearchRequest):
+    if not req.query.strip():
+        raise HTTPException(status_code=400, detail="Query is required")
+    try:
+        return {"query": req.query, "results": _do_doc_search(req.query, req.top_k)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+
+
+# ─── Web search ────────────────────────────────────────────────────────────
 
 class WebSearchRequest(BaseModel):
     query: str
     max_results: int = 10
-    categories: Optional[str] = None  # e.g. "general", "news", "it"
+    categories: Optional[str] = None
     language: str = "en"
-    time_range: Optional[str] = None  # day, week, month, year
+    time_range: Optional[str] = None
+
+
+def _do_web_search(query: str, max_results: int = 10) -> List[dict]:
+    params = {"q": query, "format": "json", "language": "en", "safesearch": "0"}
+    with httpx.Client(timeout=20.0) as client:
+        r = client.get(f"{SEARXNG_URL}/search", params=params)
+    if r.status_code != 200:
+        raise RuntimeError(f"SearXNG {r.status_code}: {r.text[:200]}")
+    payload = r.json()
+    raw = payload.get("results") or []
+    return [
+        {
+            "title": item.get("title"),
+            "url": item.get("url"),
+            "content": item.get("content"),
+            "engine": item.get("engine"),
+        }
+        for item in raw[:max_results]
+    ]
 
 
 @app.get("/search/web/health")
@@ -170,58 +223,201 @@ def web_search_health():
 
 @app.post("/search/web")
 def web_search(req: WebSearchRequest):
-    """Proxy a web search to the local SearXNG instance, returning JSON results."""
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Query is required")
-
-    params = {
-        "q": req.query,
-        "format": "json",
-        "language": req.language,
-        "safesearch": "0",
-    }
-    if req.categories:
-        params["categories"] = req.categories
-    if req.time_range:
-        params["time_range"] = req.time_range
-
     try:
-        with httpx.Client(timeout=20.0) as client:
-            r = client.get(f"{SEARXNG_URL}/search", params=params)
+        results = _do_web_search(req.query, req.max_results)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"SearXNG request failed: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
+    return {"query": req.query, "count": len(results), "results": results, "answers": [], "suggestions": []}
 
-    if r.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"SearXNG returned {r.status_code}: {r.text[:200]}",
-        )
 
+# ─── Chat with tool calling (Ollama) ───────────────────────────────────────
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_documents",
+            "description": "Search the user's local document library (ChromaDB) for relevant passages. Use this when the user asks about anything that might be in their uploaded documents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural language search query"},
+                    "top_k": {"type": "integer", "description": "Number of results to return (default 5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the live web via a private SearXNG metasearch. Use for current events or info not in the user's documents.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Web search query"},
+                    "max_results": {"type": "integer", "description": "Max results (default 5)"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+SYSTEM_PROMPT = (
+    "You are a helpful personal assistant. You have two tools: `search_documents` "
+    "to look up info from the user's uploaded document library, and `web_search` "
+    "for live info from the internet. Prefer documents first when the question "
+    "sounds like it's about the user's own material. Always cite source filenames "
+    "or URLs when you use a tool. Be concise."
+)
+
+
+class ChatMessage(BaseModel):
+    role: str  # "system" | "user" | "assistant" | "tool"
+    content: str = ""
+    tool_calls: Optional[List[dict]] = None
+    name: Optional[str] = None  # for tool messages
+
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    model: Optional[str] = None
+
+
+@app.get("/chat/models")
+def chat_models():
     try:
-        payload = r.json()
-    except Exception:
-        raise HTTPException(
-            status_code=502,
-            detail="SearXNG did not return JSON — make sure 'json' is in settings.yml formats.",
-        )
+        with httpx.Client(timeout=10.0) as client:
+            r = client.get(f"{OLLAMA_URL}/api/tags")
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Ollama returned {r.status_code}")
+        data = r.json()
+        models = [m.get("name") for m in data.get("models", []) if m.get("name")]
+        return {"models": models, "default": DEFAULT_MODEL}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Ollama unreachable: {e}")
 
-    raw = payload.get("results") or []
-    results = [
-        {
-            "title": item.get("title"),
-            "url": item.get("url"),
-            "content": item.get("content"),
-            "engine": item.get("engine"),
-            "score": item.get("score"),
-            "published_date": item.get("publishedDate"),
-        }
-        for item in raw[: req.max_results]
-    ]
-    return {
-        "query": req.query,
-        "count": len(results),
-        "results": results,
-        "answers": payload.get("answers") or [],
-        "suggestions": payload.get("suggestions") or [],
-    }
 
+def _execute_tool(name: str, args: dict) -> Any:
+    try:
+        if name == "search_documents":
+            q = str(args.get("query", "")).strip()
+            k = int(args.get("top_k", 5))
+            if not q:
+                return {"error": "query is required"}
+            return {"results": _do_doc_search(q, k)}
+        if name == "web_search":
+            q = str(args.get("query", "")).strip()
+            n = int(args.get("max_results", 5))
+            if not q:
+                return {"error": "query is required"}
+            return {"results": _do_web_search(q, n)}
+        return {"error": f"unknown tool: {name}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _sse(event: str, data: Any) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    model = req.model or DEFAULT_MODEL
+    # Build message stack: ensure system prompt first
+    msgs: List[dict] = []
+    if not req.messages or req.messages[0].role != "system":
+        msgs.append({"role": "system", "content": SYSTEM_PROMPT})
+    for m in req.messages:
+        d: dict = {"role": m.role, "content": m.content}
+        if m.tool_calls:
+            d["tool_calls"] = m.tool_calls
+        if m.name:
+            d["name"] = m.name
+        msgs.append(d)
+
+    def stream():
+        max_rounds = 6
+        try:
+            for round_i in range(max_rounds):
+                # Non-streaming tool-resolution round
+                with httpx.Client(timeout=120.0) as client:
+                    r = client.post(
+                        f"{OLLAMA_URL}/api/chat",
+                        json={
+                            "model": model,
+                            "messages": msgs,
+                            "tools": TOOLS,
+                            "stream": False,
+                        },
+                    )
+                if r.status_code != 200:
+                    yield _sse("error", {"message": f"Ollama {r.status_code}: {r.text[:300]}"})
+                    return
+                payload = r.json()
+                msg = payload.get("message") or {}
+                tool_calls = msg.get("tool_calls") or []
+
+                if tool_calls:
+                    # Echo assistant tool-call message back into history
+                    msgs.append({
+                        "role": "assistant",
+                        "content": msg.get("content", "") or "",
+                        "tool_calls": tool_calls,
+                    })
+                    for tc in tool_calls:
+                        fn = (tc.get("function") or {})
+                        name = fn.get("name", "")
+                        args = fn.get("arguments") or {}
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {}
+                        yield _sse("tool_call", {"name": name, "arguments": args})
+                        result = _execute_tool(name, args)
+                        yield _sse("tool_result", {"name": name, "result": result})
+                        msgs.append({
+                            "role": "tool",
+                            "name": name,
+                            "content": json.dumps(result)[:8000],
+                        })
+                    continue  # next round, hopefully final answer
+
+                # No tool calls — stream the final answer round for nice UX
+                with httpx.Client(timeout=300.0) as client:
+                    with client.stream(
+                        "POST",
+                        f"{OLLAMA_URL}/api/chat",
+                        json={"model": model, "messages": msgs, "stream": True},
+                    ) as sresp:
+                        if sresp.status_code != 200:
+                            body = sresp.read().decode("utf-8", errors="ignore")
+                            yield _sse("error", {"message": f"Ollama {sresp.status_code}: {body[:300]}"})
+                            return
+                        for line in sresp.iter_lines():
+                            if not line:
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            chunk = (obj.get("message") or {}).get("content")
+                            if chunk:
+                                yield _sse("token", {"text": chunk})
+                            if obj.get("done"):
+                                break
+                yield _sse("done", {})
+                return
+
+            yield _sse("error", {"message": "Tool loop exceeded max rounds"})
+        except Exception as e:
+            yield _sse("error", {"message": str(e)})
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
