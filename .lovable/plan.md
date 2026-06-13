@@ -1,108 +1,73 @@
+# Personal Assistant — v2: Chat Agent with Tools
 
-# Personal Assistant — v1: Document Ingestion
-
-Since Ollama and ChromaDB run on the user's machine, and the Lovable-hosted webapp can't reach `localhost` from a hosted HTTPS preview, v1 ships as **two pieces**: a React webapp (UI) + a **Docker Compose stack** the user runs locally (Chroma + a small ingest sidecar). The webapp talks to the sidecar over HTTP. When this later becomes a Tauri app, the same sidecar is bundled or replaced with Rust calls — no UI rewrite.
-
-## Scope (v1)
-
-- Drag-and-drop upload for **pdf, docx, doc, txt, html, md**
-- Server-side parse → chunk → embed (Chroma's default `all-MiniLM-L6-v2`) → store in Chroma
-- Document library: list ingested docs, view chunk count, delete, re-index
-- No chat / no auth yet (single-user, local)
+## Goal
+Add a local Ollama-powered chat interface that can query your document library and the web via tool calls.
 
 ## Architecture
 
 ```text
-┌─────────────────────┐    HTTP     ┌──────────────────────┐
-│  React webapp       │ ──────────▶ │  ingest-api (sidecar)│
-│  (Lovable / Tauri)  │             │  FastAPI :8080       │
-└─────────────────────┘             │  - parse             │
-                                    │  - chunk             │
-                                    │  - embed + upsert    │
-                                    └──────────┬───────────┘
-                                               │
-                                    ┌──────────▼───────────┐
-                                    │  chromadb :8000      │
-                                    │  (persistent volume) │
-                                    └──────────────────────┘
+┌─────────────────────┐     HTTP      ┌──────────────────────┐
+│  React webapp       │  ──────────▶  │  ingest-api (sidecar)│
+│  (Lovable / Tauri)  │               │  FastAPI :8080        │
+│                     │               │  - parse / chunk / embed│
+│  ┌───────────────┐  │               │  - /chat → proxy Ollama│
+│  │ /chat route   │  │               │    with tool calling    │
+│  │ - message list│  │               │  - /search (doc RAG)  │
+│  │ - input box   │  │               │  - /search/web (SearX)│
+│  └───────────────┘  │               └──────────┬────────────┘
+└─────────────────────┘                          │
+                                                 │
+                    ┌────────────────────────────┼────────────────┐
+                    │                            │                │
+                    ▼                            ▼                ▼
+            ┌──────────────┐          ┌──────────────┐   ┌─────────────┐
+            │ chromadb:8000│          │ searxng:8888 │   │ ollama:11434│
+            │ (documents)  │          │ (web search) │   │ (LLM)       │
+            └──────────────┘          └──────────────┘   └─────────────┘
 ```
 
-Both run via `docker compose up`. Webapp config takes a single env var: `VITE_INGEST_URL` (default `http://localhost:8080`).
+## What gets built
 
-## Repo layout additions
+### 1. Docker Compose — add Ollama service
+- `ollama` container on `:11434`, volume `ollama-data` for model persistence
+- Pre-pull a small fast model (e.g. `llama3.2:3b` or `phi4:mini`) so it works out of the box
+- `ingest-api` gets `OLLAMA_URL=http://ollama:11434`
 
-```text
-docker/
-  docker-compose.yml          # chroma + ingest-api
-  ingest-api/
-    Dockerfile
-    requirements.txt          # fastapi, uvicorn, chromadb-client,
-                              # pypdf, python-docx, beautifulsoup4,
-                              # markdown-it-py, python-multipart
-    main.py                   # endpoints below
-    parsers.py                # one parser per file type
-    chunker.py                # ~800-char chunks, 100 overlap
-src/
-  routes/
-    index.tsx                 # redirect to /documents
-    documents.tsx             # library + upload UI
-  lib/ingest-client.ts        # typed fetch wrapper around sidecar
-  components/
-    DocumentUploader.tsx      # drag-drop, progress
-    DocumentList.tsx          # table of ingested docs
-README.md                     # how to run the stack
-```
+### 2. Ingest API — new endpoints
+- `POST /search` — document RAG. Accepts `{query, top_k}`. Embeds the query via Chroma, returns top chunks with source metadata.
+- `POST /chat` — chat completions proxy to Ollama with tool definitions.
+  - Tools: `search_documents` (query your ChromaDB) and `web_search` (query SearXNG).
+  - The sidecar handles the tool-call loop: sends prompt to Ollama, if it calls a tool the sidecar executes it, appends result, and continues until the model returns a final answer.
+  - Streams the final answer as SSE (server-sent events) to the UI.
+- `GET /chat/models` — list locally available Ollama models so the UI can pick one.
 
-## Sidecar API (FastAPI)
+### 3. Webapp — new `/chat` route
+- Route file `src/routes/chat.tsx` with TanStack Start.
+- `ChatInterface` component:
+  - Message list (user / assistant / tool-call bubbles)
+  - Model selector dropdown (populated from `/chat/models`)
+  - Text input with send button
+  - Streaming response renders word-by-word
+  - "New chat" button to clear history
+- Global nav: add a simple top bar with links to `/documents` and `/chat`.
 
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET`  | `/health` | liveness + chroma reachability |
-| `POST` | `/documents` | multipart upload → parse, chunk, embed, upsert. Returns `{id, name, chunks}` |
-| `GET`  | `/documents` | list distinct source docs (group by metadata.doc_id) |
-| `DELETE` | `/documents/{id}` | delete all chunks where metadata.doc_id matches |
-| `POST` | `/search` *(stub for v2)* | placeholder for tool-call retrieval later |
+### 4. Tool schemas (Ollama format)
+- `search_documents`: `{query: string, top_k?: number}` → sidecar calls Chroma `collection.query()` and returns `[{source, chunk_index, content}]`.
+- `web_search`: `{query: string, max_results?: number}` → sidecar calls SearXNG and returns `[{title, url, content}]`.
 
-CORS open to `*` for local use. Collection name: `documents`. Chroma uses its bundled embedding function so no API keys, no GPU required — runs CPU-only.
+## Out of scope for v2
+- Conversation persistence (no DB, history lives in React state; refresh = reset)
+- Multi-modal (images, voice)
+- Tauri bundling (still webapp for now)
 
-Parsers:
-- `.pdf` → `pypdf`
-- `.docx` → `python-docx`
-- `.doc` → reject in v1 with a clear error (needs LibreOffice); add later
-- `.html` → `beautifulsoup4` (strip scripts/styles, get text)
-- `.md` → `markdown-it-py` → strip to text
-- `.txt` → read as-is
-
-Chunking: recursive char splitter, 800 chars, 100 overlap. Each chunk stored with metadata `{doc_id, source_name, mime, chunk_index, total_chunks, ingested_at}`.
-
-## Webapp
-
-- TanStack Start route `/documents` is the home (index redirects there).
-- `DocumentUploader`: drag-drop zone, file list with per-file progress and status (queued / parsing / embedding / done / error). Posts each file individually so big PDFs don't block others.
-- `DocumentList`: table of `{name, chunks, ingested_at, actions: delete / re-index}`. Re-index = delete + re-upload (user picks file again in v1).
-- A status banner at the top pings `/health` and shows "Sidecar offline — run `docker compose up` in the project's `docker/` folder" with a copy button when unreachable.
-- Pure shadcn/Tailwind, no backend secrets, no Lovable Cloud needed for v1.
-
-## Running it (added to README)
-
+## Running it
 ```bash
 cd docker
 docker compose up -d
-# webapp: bun dev, opens http://localhost:5173
+# Ollama will pull the model on first chat — ~2 GB download
 ```
 
-Chroma data persisted in a named volume `chroma-data` so restarts keep documents.
-
-## What this sets up for v2 (not built now)
-
-- `/search` endpoint already stubbed — wire to Chroma `query` later
-- Ollama service can be added to the same compose file
-- Chat UI + tool-calling agent (`search_documents`) becomes a new route, leaves ingestion untouched
-- Tauri shell: replace `VITE_INGEST_URL` with bundled sidecar binary or in-process Rust
-
-## Open assumptions (will proceed unless you object)
-
-1. **Chroma's default embedder** (MiniLM, 384-dim, English-focused) is fine for v1. Swap is one line in the sidecar later.
-2. **No auth, single-user, local-only.** No data leaves the machine.
-3. **`.doc` (legacy Word)** is out of scope for v1 — error with a helpful message.
-4. Webapp runs in dev locally too (since Chroma is on localhost). The Lovable hosted preview will show the "sidecar offline" banner, which is expected.
+## Open assumptions
+1. **Model choice**: `llama3.2:3b` as default — small, fast, decent tool-calling. User can switch via `/chat/models`.
+2. **No auth**: still single-user local.
+3. **History is ephemeral**: page refresh clears the thread. Persistent chat history is v3.

@@ -1,35 +1,31 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { AlertCircle, CheckCircle2, Copy, Database, MessageSquare } from "lucide-react";
-import { DocumentUploader } from "@/components/DocumentUploader";
-import { DocumentList } from "@/components/DocumentList";
-import { WebSearchPanel } from "@/components/WebSearchPanel";
+import { ChatInterface } from "@/components/ChatInterface";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ingestUrl, ping } from "@/lib/ingest-client";
 
-export const Route = createFileRoute("/documents")({
+export const Route = createFileRoute("/chat")({
   head: () => ({
     meta: [
-      { title: "Documents — Personal Assistant" },
+      { title: "Chat — Personal Assistant" },
       {
         name: "description",
         content:
-          "Ingest documents into a local ChromaDB vector store for your personal assistant.",
+          "Chat with your local Ollama-powered assistant. It can search your documents and the web.",
       },
-      { property: "og:title", content: "Documents — Personal Assistant" },
+      { property: "og:title", content: "Chat — Personal Assistant" },
       {
         property: "og:description",
-        content: "Upload documents and build your local knowledge base.",
+        content: "Local LLM chat with document RAG and web search tool calling.",
       },
     ],
   }),
-  component: DocumentsPage,
+  component: ChatPage,
 });
 
-function DocumentsPage() {
+function ChatPage() {
   const [online, setOnline] = useState<boolean | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,7 +47,7 @@ function DocumentsPage() {
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
-              <Database className="h-5 w-5 text-primary" />
+              <MessageSquare className="h-5 w-5 text-primary" />
               <h1 className="text-base font-semibold text-foreground">
                 Personal Assistant
               </h1>
@@ -79,44 +75,16 @@ function DocumentsPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-5xl px-6 py-8">
-        {online === false && <SidecarOfflineBanner />}
-
-        <Tabs defaultValue="documents" className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="documents">Documents</TabsTrigger>
-            <TabsTrigger value="web">Web search</TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="documents" className="space-y-6">
-            <section className="space-y-2">
-              <h2 className="text-2xl font-bold tracking-tight text-foreground">
-                Documents
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                Upload files to embed them into your local ChromaDB. The assistant will
-                use this library to answer questions in v2.
-              </p>
-            </section>
-            <DocumentUploader onUploaded={() => setRefreshKey((k) => k + 1)} />
-            <DocumentList refreshKey={refreshKey} />
-          </TabsContent>
-
-          <TabsContent value="web">
-            <WebSearchPanel />
-          </TabsContent>
-        </Tabs>
+      <main className="mx-auto max-w-5xl px-6 py-6">
+        {online === false ? <SidecarOfflineBanner /> : <ChatInterface />}
       </main>
-
     </div>
   );
 }
 
 function SidecarBadge({ online }: { online: boolean | null }) {
   if (online === null)
-    return (
-      <span className="text-xs text-muted-foreground">Checking sidecar…</span>
-    );
+    return <span className="text-xs text-muted-foreground">Checking sidecar…</span>;
   return online ? (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-green-500/10 px-2.5 py-1 text-xs font-medium text-green-700 dark:text-green-400">
       <CheckCircle2 className="h-3.5 w-3.5" />
@@ -154,9 +122,6 @@ function SidecarOfflineBanner() {
               Copy
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            See <code>README.md</code> for setup details.
-          </p>
         </div>
       </div>
     </div>

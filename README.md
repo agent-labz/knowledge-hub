@@ -2,15 +2,26 @@
 
 A local-first personal assistant that ingests your documents into a vector database and searches the web through your own SearXNG, so an AI agent (v2) can use both as tools.
 
-## v1 services
+## Services
 
 | Service | Purpose | Port |
 |---|---|---|
 | **chromadb** | Vector store for embedded document chunks | `:8000` |
 | **searxng** | Privacy-respecting metasearch (Google, Bing, DDG, Wikipedia, GitHub…) | `:8888` |
-| **ingest-api** | FastAPI sidecar: parses files, chunks, embeds into Chroma, proxies web search | `:8080` |
+| **ollama** | Local LLM runtime — powers the chat agent | `:11434` |
+| **ingest-api** | FastAPI sidecar: parses files, embeds into Chroma, proxies web search, runs the chat tool loop | `:8080` |
 
-The webapp talks to `ingest-api` only — it never reaches Chroma or SearXNG directly.
+The webapp talks to `ingest-api` only — it never reaches Chroma, SearXNG, or Ollama directly.
+
+### Pull a model
+
+After `docker compose up -d`, pull a chat model into Ollama (one-time, ~2 GB):
+
+```bash
+docker exec assistant-ollama ollama pull llama3.2:3b
+```
+
+Override the default with `DEFAULT_MODEL=phi4:mini docker compose up -d` etc.
 
 ## Running it
 
@@ -62,9 +73,11 @@ docker compose down -v           # also wipe chroma-data volume
 | `POST` | `/documents` | upload + ingest a file |
 | `GET`  | `/documents` | list ingested documents |
 | `DELETE` | `/documents/{id}` | delete all chunks for a doc |
-| `POST` | `/search` | stub — RAG over Chroma (v2) |
+| `POST` | `/search` | RAG search over Chroma |
 | `GET`  | `/search/web/health` | SearXNG liveness |
 | `POST` | `/search/web` | web search via SearXNG (JSON) |
+| `GET`  | `/chat/models` | list locally-pulled Ollama models |
+| `POST` | `/chat` | SSE stream — runs the tool-calling loop (`search_documents`, `web_search`) and streams the final answer |
 
 `POST /search/web` body:
 ```json
@@ -78,14 +91,16 @@ docker compose down -v           # also wipe chroma-data volume
 | `VITE_INGEST_URL` | webapp | `http://localhost:8080` | Ingest API URL |
 | `SEARXNG_SECRET` | compose | placeholder | Secret key for SearXNG sessions — set your own |
 | `SEARXNG_URL` | ingest-api | `http://searxng:8080` | Internal sidecar→SearXNG URL |
+| `OLLAMA_URL` | ingest-api | `http://ollama:11434` | Internal sidecar→Ollama URL |
+| `DEFAULT_MODEL` | ingest-api | `llama3.2:3b` | Model used when chat request omits one |
 
-SearXNG config: `docker/searxng/settings.yml` (JSON format is enabled — required for the API). Tweak engines or `safe_search` there.
+SearXNG config: `docker/searxng/settings.yml`.
 
-## v2 (next)
+## v3 (next)
 
-- Add **Ollama** to the same compose stack
-- Chat UI with an agent that has two tools: `search_documents` (Chroma) and `search_web` (SearXNG)
+- Persistent chat history
 - Tauri shell bundling all four services
+- Multi-modal (images, audio)
 
 ## File support notes
 
